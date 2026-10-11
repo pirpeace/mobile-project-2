@@ -1,0 +1,173 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import '../helper/db_helper.dart';
+
+class ShoppingListScreen extends StatefulWidget {
+  const ShoppingListScreen({super.key});
+
+  @override
+  State<ShoppingListScreen> createState() => _ShoppingListScreenState();
+}
+
+class _ShoppingListScreenState extends State<ShoppingListScreen> {
+  late Future<List<Map<String, dynamic>>> _listFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _reload();
+  }
+
+  void _reload() {
+    setState(() {
+      _listFuture = DBHelper.getShoppingList();
+    });
+  }
+
+  // จำนวนที่แนะนำให้ซื้อ: เติมให้ถึง 2 เท่าของขั้นต่ำ
+  int _suggestedQty(Map<String, dynamic> item) {
+    final int stock = item['stock_qty'] ?? 0;
+    final int min = item['min_qty'] ?? 0;
+    final need = (min * 2) - stock;
+    return need < 1 ? 1 : need;
+  }
+
+  // คัดลอกรายการเป็นข้อความ เพื่อวางใน LINE ให้คนอื่นซื้อแทนได้
+  Future<void> _copyList(List<Map<String, dynamic>> items) async {
+    final d = DateTime.now();
+    final buffer = StringBuffer(
+      'รายการที่ต้องซื้อ ${d.day}/${d.month}/${d.year}\n',
+    );
+    for (final item in items) {
+      final supplier = item['supplier_name'];
+      buffer.writeln(
+        '- ${item['name']} x ${_suggestedQty(item)}'
+        '${supplier != null ? ' ($supplier)' : ''}',
+      );
+    }
+    await Clipboard.setData(ClipboardData(text: buffer.toString()));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('คัดลอกรายการแล้ว นำไปวางใน LINE ได้เลย')),
+    );
+  }
+
+  // กดว่าซื้อมาแล้ว -> ใส่จำนวนที่ได้รับ เพิ่มเข้าสต็อก
+  void _showReceiveDialog(Map<String, dynamic> item) {
+    final qtyController = TextEditingController(
+      text: _suggestedQty(item).toString(),
+    );
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text("รับของเข้า: ${item['name']}"),
+        content: TextField(
+          controller: qtyController,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: "จำนวนที่ซื้อมา"),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("ยกเลิก"),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final qty = int.tryParse(qtyController.text);
+              if (qty != null && qty > 0) {
+                await DBHelper.addStock(item['barcode'], qty);
+                if (!mounted) return;
+                Navigator.pop(context);
+                _reload();
+              }
+            },
+            child: const Text("บันทึก"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('รายการที่ต้องซื้อ'),
+        backgroundColor: Colors.blueAccent,
+        actions: [
+          FutureBuilder<List<Map<String, dynamic>>>(
+            future: _listFuture,
+            builder: (context, snapshot) {
+              final items = snapshot.data ?? [];
+              return IconButton(
+                icon: const Icon(Icons.copy),
+                tooltip: 'คัดลอกรายการ',
+                onPressed: items.isEmpty ? null : () => _copyList(items),
+              );
+            },
+          ),
+        ],
+      ),
+      body: FutureBuilder<List<Map<String, dynamic>>>(
+        future: _listFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError) {
+            return Center(child: Text('เกิดข้อผิดพลาด: ${snapshot.error}'));
+          }
+
+          final items = snapshot.data ?? [];
+          if (items.isEmpty) {
+            return const Center(
+              child: Text(
+                'ตอนนี้ไม่มีสินค้าที่ต้องซื้อเพิ่ม',
+                style: TextStyle(fontSize: 18, color: Colors.grey),
+              ),
+            );
+          }
+
+          return ListView.separated(
+            itemCount: items.length,
+            separatorBuilder: (context, index) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final item = items[index];
+              final supplier = item['supplier_name'];
+              return ListTile(
+                title: Text(
+                  item['name'] ?? '',
+                  style: const TextStyle(fontWeight: FontWeight.bold),
+                ),
+                subtitle: Text(
+                  'เหลือ ${item['stock_qty']} (ขั้นต่ำ ${item['min_qty']})'
+                  '${supplier != null ? '\nซื้อที่: $supplier' : ''}',
+                ),
+                isThreeLine: supplier != null,
+                trailing: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'ซื้อ ${_suggestedQty(item)}',
+                      style: const TextStyle(
+                        fontSize: 16,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.deepOrange,
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.check_circle, color: Colors.green),
+                      tooltip: 'ซื้อแล้ว',
+                      onPressed: () => _showReceiveDialog(item),
+                    ),
+                  ],
+                ),
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
