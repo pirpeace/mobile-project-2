@@ -1,6 +1,14 @@
 import 'package:flutter/material.dart';
 import '../helper/db_helper.dart';
 import '../shopping/shopping_list_screen.dart';
+import 'product_edit_sheet.dart';
+import 'product_image.dart';
+
+String _formatPrice(dynamic price) {
+  final value = (price as num?)?.toDouble() ?? 0;
+  if (value == value.roundToDouble()) return value.toInt().toString();
+  return value.toStringAsFixed(2);
+}
 
 class ProductListScreen extends StatefulWidget {
   const ProductListScreen({super.key});
@@ -10,160 +18,106 @@ class ProductListScreen extends StatefulWidget {
 }
 
 class _ProductListScreenState extends State<ProductListScreen> {
-  late Future<List<Map<String, dynamic>>> _productListFuture;
+  static const String _noCategory = 'ไม่ระบุหมวด';
+
+  final TextEditingController _searchController = TextEditingController();
+
+  List<Map<String, dynamic>> _all = [];
+  bool _loading = true;
+  Object? _error;
+  String _query = '';
+  String? _categoryFilter;
 
   @override
   void initState() {
     super.initState();
-    _refreshProductList();
+    _load();
   }
 
-  // ฟังก์ชันรีโหลดข้อมูลสินค้าใหม่จาก Database
-  void _refreshProductList() {
-    setState(() {
-      _productListFuture = DBHelper.getAllProducts();
-    });
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final data = await DBHelper.getAllProducts();
+      if (!mounted) return;
+      setState(() {
+        _all = data;
+        _loading = false;
+        _error = null;
+        if (_categoryFilter != null &&
+            !_group(_all).keys.contains(_categoryFilter)) {
+          _categoryFilter = null;
+        }
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = e;
+        _loading = false;
+      });
+    }
+  }
+
+  /// จัดกลุ่มตามหมวดหมู่ (เรียงตามลำดับหมวด) และเรียงชื่อสินค้าในแต่ละหมวด
+  Map<String, List<Map<String, dynamic>>> _group(
+    List<Map<String, dynamic>> items,
+  ) {
+    final sorted = [...items]
+      ..sort((a, b) {
+        final ai = (a['category_id'] as int?) ?? (1 << 30);
+        final bi = (b['category_id'] as int?) ?? (1 << 30);
+        final byCategory = ai.compareTo(bi);
+        if (byCategory != 0) return byCategory;
+        return (a['name']?.toString() ?? '').compareTo(
+          b['name']?.toString() ?? '',
+        );
+      });
+
+    final groups = <String, List<Map<String, dynamic>>>{};
+    for (final p in sorted) {
+      final key = p['category_name']?.toString() ?? _noCategory;
+      groups.putIfAbsent(key, () => []).add(p);
+    }
+    return groups;
+  }
+
+  List<Map<String, dynamic>> get _filtered {
+    final q = _query.trim().toLowerCase();
+    return _all.where((p) {
+      final category = p['category_name']?.toString() ?? _noCategory;
+      if (_categoryFilter != null && category != _categoryFilter) {
+        return false;
+      }
+      if (q.isEmpty) return true;
+      final name = p['name']?.toString().toLowerCase() ?? '';
+      final barcode = p['barcode']?.toString().toLowerCase() ?? '';
+      return name.contains(q) || barcode.contains(q);
+    }).toList();
   }
 
   void _openShoppingList() {
     Navigator.push(
       context,
       MaterialPageRoute(builder: (context) => const ShoppingListScreen()),
-    ).then((_) => _refreshProductList());
+    ).then((_) => _load());
   }
 
-  // Dialog แก้ไขข้อมูลสินค้า (ชื่อ, ราคา, จำนวนคงเหลือ, ขั้นต่ำ, หมวดหมู่)
-  Future<void> _showEditProductDialog(Map<String, dynamic> product) async {
-    final categories = await DBHelper.getCategories();
-    if (!mounted) return;
-
-    final nameController = TextEditingController(text: product['name']);
-    final priceController = TextEditingController(
-      text: product['price'].toString(),
-    );
-    final stockController = TextEditingController(
-      text: (product['stock_qty'] ?? 0).toString(),
-    );
-    final minController = TextEditingController(
-      text: (product['min_qty'] ?? 0).toString(),
-    );
-    int? selectedCategory = product['category_id'];
-
-    showDialog(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setLocalState) => AlertDialog(
-          title: Text("แก้ไขสินค้า (${product['barcode']})"),
-          content: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameController,
-                  decoration: const InputDecoration(labelText: "ชื่อสินค้า"),
-                ),
-                TextField(
-                  controller: priceController,
-                  decoration: const InputDecoration(labelText: "ราคาขาย (บาท)"),
-                  keyboardType: const TextInputType.numberWithOptions(
-                    decimal: true,
-                  ),
-                ),
-                TextField(
-                  controller: stockController,
-                  decoration: const InputDecoration(labelText: "จำนวนคงเหลือ"),
-                  keyboardType: TextInputType.number,
-                ),
-                TextField(
-                  controller: minController,
-                  decoration: const InputDecoration(
-                    labelText: "จำนวนขั้นต่ำ (ต่ำกว่านี้ให้เตือนซื้อ)",
-                  ),
-                  keyboardType: TextInputType.number,
-                ),
-                const SizedBox(height: 12),
-                DropdownButtonFormField<int>(
-                  value: selectedCategory,
-                  decoration: const InputDecoration(labelText: "หมวดหมู่"),
-                  items: categories
-                      .map(
-                        (c) => DropdownMenuItem<int>(
-                          value: c['id'] as int,
-                          child: Text(c['name']),
-                        ),
-                      )
-                      .toList(),
-                  onChanged: (v) => setLocalState(() => selectedCategory = v),
-                ),
-              ],
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text("ยกเลิก"),
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                final price = double.tryParse(priceController.text);
-                if (nameController.text.isNotEmpty && price != null) {
-                  await DBHelper.updateProduct(
-                    product['barcode'],
-                    nameController.text,
-                    price,
-                  );
-                  await DBHelper.updateStockSettings(
-                    product['barcode'],
-                    stockQty: int.tryParse(stockController.text) ?? 0,
-                    minQty: int.tryParse(minController.text) ?? 0,
-                    categoryId: selectedCategory,
-                  );
-                  if (!mounted) return;
-                  Navigator.pop(context);
-                  _refreshProductList(); // รีโหลดข้อมูลหน้าจอ
-                }
-              },
-              child: const Text("บันทึก"),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // Dialog ยืนยันการลบสินค้า
-  void _confirmDelete(String barcode, String name) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text("ยืนยันการลบ"),
-        content: Text("คุณต้องการลบรายการ '$name' หรือไม่?"),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text("ยกเลิก"),
-          ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
-            onPressed: () async {
-              await DBHelper.deleteProduct(barcode);
-              if (!mounted) return;
-              Navigator.pop(context);
-              _refreshProductList(); // รีโหลดข้อมูลหน้าจอ
-            },
-            child: const Text("ลบ", style: TextStyle(color: Colors.white)),
-          ),
-        ],
-      ),
-    );
+  Future<void> _edit(Map<String, dynamic> item) async {
+    final changed = await showProductEditSheet(context, item);
+    if (changed && mounted) {
+      _load();
+    }
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('รายการสินค้าทั้งหมด'),
-        backgroundColor: Colors.blueAccent,
+        title: const Text('รายการสินค้า'),
         actions: [
           IconButton(
             icon: const Icon(Icons.shopping_cart_checkout),
@@ -172,139 +126,334 @@ class _ProductListScreenState extends State<ProductListScreen> {
           ),
         ],
       ),
-      body: FutureBuilder<List<Map<String, dynamic>>>(
-        future: _productListFuture,
-        builder: (context, snapshot) {
-          // 1. กำลังโหลดข้อมูลจาก Database
-          if (snapshot.connectionState == ConnectionState.waiting) {
-            return const Center(child: CircularProgressIndicator());
-          }
-
-          // 2. เกิดข้อผิดพลาดในการดึงข้อมูล
-          if (snapshot.hasError) {
-            return Center(
-              child: Text(
-                'เกิดข้อผิดพลาด: ${snapshot.error}',
-                style: const TextStyle(color: Colors.red),
-              ),
-            );
-          }
-
-          // 3. กรณีไม่มีข้อมูลสินค้าเลย
-          if (!snapshot.hasData || snapshot.data!.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.inventory_2_outlined,
-                    size: 80,
-                    color: Colors.grey[400],
-                  ),
-                  const SizedBox(height: 16),
-                  const Text(
-                    'ยังไม่มีข้อมูลสินค้าในระบบ',
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      color: Colors.grey,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  const Text(
-                    'กลับไปหน้าสแกนเพื่อเพิ่มสินค้าชิ้นแรกของคุณ',
-                    style: TextStyle(fontSize: 14, color: Colors.grey),
-                  ),
-                ],
-              ),
-            );
-          }
-
-          // 4. กรณีมีข้อมูลสินค้าใน Database
-          final products = snapshot.data!;
-
-          return ListView.separated(
-            itemCount: products.length,
-            separatorBuilder: (context, index) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final item = products[index];
-              final bool labelOutdated = (item['label_outdated'] ?? 0) == 1;
-              final int stock = item['stock_qty'] ?? 0;
-              final int min = item['min_qty'] ?? 0;
-              final bool lowStock = min > 0 && stock <= min;
-
-              return ListTile(
-                isThreeLine: true,
-                leading: CircleAvatar(
-                  backgroundColor: Colors.blueAccent.shade100,
-                  child: Text(
-                    '${index + 1}',
-                    style: const TextStyle(color: Colors.black87),
-                  ),
-                ),
-                title: Text(
-                  item['name'] ?? 'ไม่มีชื่อสินค้า',
-                  style: const TextStyle(
-                    fontWeight: FontWeight.bold,
-                    fontSize: 16,
-                  ),
-                ),
-                subtitle: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('บาร์โค้ด: ${item['barcode']}'),
-                    Text(
-                      '${item['category_name'] ?? '-'} | คงเหลือ $stock'
-                      '${lowStock ? ' (ใกล้หมด!)' : ''}',
-                      style: TextStyle(
-                        color: lowStock ? Colors.red : Colors.black54,
-                        fontWeight: lowStock
-                            ? FontWeight.bold
-                            : FontWeight.normal,
-                      ),
-                    ),
-                    if (labelOutdated)
-                      InkWell(
-                        onTap: () async {
-                          await DBHelper.markLabelUpdated(item['barcode']);
-                          _refreshProductList();
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+            child: TextField(
+              controller: _searchController,
+              onChanged: (v) => setState(() => _query = v),
+              decoration: InputDecoration(
+                hintText: 'ค้นหาชื่อสินค้าหรือบาร์โค้ด',
+                prefixIcon: const Icon(Icons.search),
+                suffixIcon: _query.isEmpty
+                    ? null
+                    : IconButton(
+                        icon: const Icon(Icons.close),
+                        onPressed: () {
+                          _searchController.clear();
+                          setState(() => _query = '');
                         },
-                        child: const Text(
-                          'ป้ายราคายังไม่อัปเดต (แตะเมื่อเปลี่ยนป้ายแล้ว)',
-                          style: TextStyle(
-                            color: Colors.orange,
-                            fontWeight: FontWeight.bold,
-                          ),
+                      ),
+                filled: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 0),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  borderSide: BorderSide.none,
+                ),
+              ),
+            ),
+          ),
+          _buildCategoryChips(),
+          Expanded(child: _buildBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildCategoryChips() {
+    final names = _group(_all).keys.toList();
+    if (names.length < 2) return const SizedBox.shrink();
+
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 8),
+            child: ChoiceChip(
+              label: const Text('ทั้งหมด'),
+              selected: _categoryFilter == null,
+              onSelected: (_) => setState(() => _categoryFilter = null),
+            ),
+          ),
+          for (final n in names)
+            Padding(
+              padding: const EdgeInsets.only(right: 8),
+              child: ChoiceChip(
+                label: Text(n),
+                selected: _categoryFilter == n,
+                onSelected: (_) => setState(() => _categoryFilter = n),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBody() {
+    final cs = Theme.of(context).colorScheme;
+
+    if (_loading) {
+      return const Center(child: CircularProgressIndicator());
+    }
+
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.error_outline, size: 48, color: cs.error),
+              const SizedBox(height: 12),
+              Text('เกิดข้อผิดพลาด: $_error', textAlign: TextAlign.center),
+              const SizedBox(height: 12),
+              FilledButton.tonal(
+                onPressed: () {
+                  setState(() => _loading = true);
+                  _load();
+                },
+                child: const Text('ลองใหม่'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    if (_all.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.inventory_2_outlined,
+              size: 80,
+              color: cs.onSurfaceVariant,
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'ยังไม่มีข้อมูลสินค้าในระบบ',
+              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'กลับไปหน้าสแกนเพื่อเพิ่มสินค้าชิ้นแรกของคุณ',
+              style: TextStyle(fontSize: 14, color: cs.onSurfaceVariant),
+            ),
+          ],
+        ),
+      );
+    }
+
+    final items = _filtered;
+    if (items.isEmpty) {
+      return Center(
+        child: Text(
+          'ไม่พบสินค้าที่ค้นหา',
+          style: TextStyle(color: cs.onSurfaceVariant),
+        ),
+      );
+    }
+
+    final groups = _group(items);
+
+    // จำนวนคอลัมน์ตามความกว้างจอ แล้วคำนวณความสูงการ์ด = รูปจัตุรัส + พื้นที่ข้อความ
+    const sidePadding = 16.0;
+    const gap = 16.0;
+    final width = MediaQuery.of(context).size.width;
+    final columns = width >= 900 ? 4 : (width >= 600 ? 3 : 2);
+    final itemWidth = (width - sidePadding * 2 - gap * (columns - 1)) / columns;
+    final itemExtent = itemWidth + 84;
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: CustomScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        slivers: [
+          for (final entry in groups.entries) ...[
+            SliverToBoxAdapter(
+              child: _CategoryHeader(
+                name: entry.key,
+                count: entry.value.length,
+              ),
+            ),
+            SliverPadding(
+              padding: const EdgeInsets.symmetric(horizontal: sidePadding),
+              sliver: SliverGrid(
+                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: columns,
+                  mainAxisSpacing: gap,
+                  crossAxisSpacing: gap,
+                  mainAxisExtent: itemExtent,
+                ),
+                delegate: SliverChildBuilderDelegate((context, index) {
+                  final item = entry.value[index];
+                  return _ProductCard(item: item, onTap: () => _edit(item));
+                }, childCount: entry.value.length),
+              ),
+            ),
+          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 32)),
+        ],
+      ),
+    );
+  }
+}
+
+class _CategoryHeader extends StatelessWidget {
+  final String name;
+  final int count;
+
+  const _CategoryHeader({required this.name, required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
+      child: Row(
+        children: [
+          Text(
+            name,
+            style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+            decoration: BoxDecoration(
+              color: cs.primaryContainer,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '$count',
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: cs.onPrimaryContainer,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatusDot extends StatelessWidget {
+  final IconData icon;
+  final Color background;
+  final Color foreground;
+
+  const _StatusDot({
+    required this.icon,
+    required this.background,
+    required this.foreground,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 26,
+      height: 26,
+      decoration: BoxDecoration(color: background, shape: BoxShape.circle),
+      child: Icon(icon, size: 15, color: foreground),
+    );
+  }
+}
+
+class _ProductCard extends StatelessWidget {
+  final Map<String, dynamic> item;
+  final VoidCallback onTap;
+
+  const _ProductCard({required this.item, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final cs = Theme.of(context).colorScheme;
+
+    final int stock = item['stock_qty'] ?? 0;
+    final int min = item['min_qty'] ?? 0;
+    final lowStock = min > 0 && stock <= min;
+    final outdated = (item['label_outdated'] ?? 0) == 1;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(24),
+        onTap: onTap,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            AspectRatio(
+              aspectRatio: 1,
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ProductImage(
+                      imageFile: item['image_file']?.toString(),
+                      iconSize: 44,
+                    ),
+                    if (outdated || lowStock)
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            if (outdated)
+                              _StatusDot(
+                                icon: Icons.sell_outlined,
+                                background: cs.tertiaryContainer,
+                                foreground: cs.onTertiaryContainer,
+                              ),
+                            if (outdated && lowStock) const SizedBox(width: 4),
+                            if (lowStock)
+                              _StatusDot(
+                                icon: Icons.warning_amber_rounded,
+                                background: cs.errorContainer,
+                                foreground: cs.onErrorContainer,
+                              ),
+                          ],
                         ),
                       ),
                   ],
                 ),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      '฿${item['price']}',
-                      style: const TextStyle(
-                        fontSize: 18,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.green,
-                      ),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.edit, color: Colors.orange),
-                      onPressed: () => _showEditProductDialog(item),
-                    ),
-                    IconButton(
-                      icon: const Icon(Icons.delete, color: Colors.red),
-                      onPressed: () =>
-                          _confirmDelete(item['barcode'], item['name'] ?? ''),
-                    ),
-                  ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                item['name']?.toString() ?? 'ไม่มีชื่อสินค้า',
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontWeight: FontWeight.w600,
+                  fontSize: 14,
                 ),
-              );
-            },
-          );
-        },
+              ),
+            ),
+            const SizedBox(height: 2),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 4),
+              child: Text(
+                '฿${_formatPrice(item['price'])}',
+                style: TextStyle(
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                  color: cs.primary,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

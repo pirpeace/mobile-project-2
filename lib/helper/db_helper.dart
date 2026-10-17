@@ -3,7 +3,7 @@ import 'package:path/path.dart';
 
 class DBHelper {
   static Database? _db;
-  static const int _dbVersion = 2;
+  static const int _dbVersion = 3;
 
   static Future<Database> get database async {
     if (_db != null) return _db!;
@@ -17,7 +17,6 @@ class DBHelper {
       path,
       version: _dbVersion,
       onConfigure: (db) async {
-        // เปิดใช้ Foreign Key (SQLite ปิดไว้เป็นค่าเริ่มต้น)
         await db.execute('PRAGMA foreign_keys = ON');
       },
       onCreate: _onCreate,
@@ -25,9 +24,6 @@ class DBHelper {
     );
   }
 
-  // ---------------------------------------------------------------
-  // สร้างฐานข้อมูลใหม่ (ติดตั้งครั้งแรก)
-  // ---------------------------------------------------------------
   static Future<void> _onCreate(Database db, int version) async {
     await _createCategoriesAndSuppliers(db);
 
@@ -43,6 +39,7 @@ class DBHelper {
         supplier_id INTEGER,
         label_outdated INTEGER DEFAULT 0,
         last_checked TEXT,
+        image_file TEXT,
         FOREIGN KEY(category_id) REFERENCES categories(id),
         FOREIGN KEY(supplier_id) REFERENCES suppliers(id)
       )
@@ -51,24 +48,20 @@ class DBHelper {
     await _createExtraTables(db);
     await _seedCategories(db);
 
-    // สินค้าตัวอย่าง
     await db.insert('products', {
-      'barcode': '8853042000963',
+      'barcode': '8851234567890',
       'name': 'ยาทาแผลสด โพวิโดน-ไอโอดีน (ตราเสือดาว)',
       'price': 15.0,
       'category_id': 1,
     });
     await db.insert('products', {
-      'barcode': '8853593004328',
+      'barcode': '8859876543210',
       'name': 'ยาทาแผลสด',
       'price': 20.0,
       'category_id': 1,
     });
   }
 
-  // ---------------------------------------------------------------
-  // อัปเกรดจาก v1 -> v2 (ข้อมูลสินค้าเดิมไม่หาย)
-  // ---------------------------------------------------------------
   static Future<void> _onUpgrade(
     Database db,
     int oldVersion,
@@ -96,25 +89,27 @@ class DBHelper {
       );
       await db.execute('ALTER TABLE products ADD COLUMN last_checked TEXT');
 
-      // สินค้าเดิมทั้งหมดให้อยู่หมวด "ทั่วไป"
       await db.execute('UPDATE products SET category_id = 1');
 
       await _createExtraTables(db);
     }
+
+    if (oldVersion < 3) {
+      // เก็บเฉพาะ "ชื่อไฟล์" ของรูปสินค้า (ไฟล์จริงอยู่ในโฟลเดอร์ของแอป)
+      await db.execute('ALTER TABLE products ADD COLUMN image_file TEXT');
+    }
   }
 
   static Future<void> _createCategoriesAndSuppliers(Database db) async {
-    // หมวดหมู่ + ความถี่การเช็ค + บริษัทเติมให้เองหรือไม่
     await db.execute('''
       CREATE TABLE categories(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         name TEXT NOT NULL,
-        check_freq TEXT DEFAULT 'weekly', -- weekly / monthly / none
-        auto_restock INTEGER DEFAULT 0    -- 1 = บริษัทเติมให้ ไม่ต้องเช็ค/สั่ง
+        check_freq TEXT DEFAULT 'weekly',
+        auto_restock INTEGER DEFAULT 0
       )
     ''');
 
-    // ร้านที่ซื้อของ / ซัพพลายเออร์
     await db.execute('''
       CREATE TABLE suppliers(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -126,18 +121,16 @@ class DBHelper {
   }
 
   static Future<void> _createExtraTables(Database db) async {
-    // ล็อตสินค้าตามวันหมดอายุ
     await db.execute('''
       CREATE TABLE batches(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         barcode TEXT NOT NULL,
-        expiry_date TEXT NOT NULL, -- รูปแบบ yyyy-MM-dd
+        expiry_date TEXT NOT NULL,
         qty INTEGER NOT NULL,
         FOREIGN KEY(barcode) REFERENCES products(barcode) ON DELETE CASCADE
       )
     ''');
 
-    // ประวัติการเปลี่ยนราคา
     await db.execute('''
       CREATE TABLE price_history(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -149,7 +142,6 @@ class DBHelper {
       )
     ''');
 
-    // บันทึกของที่ทิ้ง / เสียหาย
     await db.execute('''
       CREATE TABLE waste_log(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -162,7 +154,6 @@ class DBHelper {
       )
     ''');
 
-    // คำขอจากลูกค้า (ของที่ลูกค้าถามหาแต่ร้านไม่มี)
     await db.execute('''
       CREATE TABLE customer_requests(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -189,7 +180,7 @@ class DBHelper {
       'id': 3,
       'name': 'ไอศกรีม',
       'check_freq': 'none',
-      'auto_restock': 1, // บริษัทเติมให้
+      'auto_restock': 1,
     });
     await db.insert('categories', {
       'id': 4,
@@ -199,23 +190,16 @@ class DBHelper {
     });
   }
 
-  // ===============================================================
-  // สินค้า
-  // ===============================================================
-
-  // 1. ค้นหาสินค้าจากบาร์โค้ด
   static Future<Map<String, dynamic>?> getProduct(String barcode) async {
     final db = await database;
-    List<Map<String, dynamic>> result = await db.query(
+    final result = await db.query(
       'products',
       where: 'barcode = ?',
       whereArgs: [barcode],
     );
-    if (result.isNotEmpty) return result.first;
-    return null;
+    return result.isNotEmpty ? result.first : null;
   }
 
-  // 2. เพิ่มสินค้าใหม่ หรืออัปเดตชื่อ/ราคา (ไม่ทับข้อมูลสต็อกเดิม)
   static Future<void> insertOrUpdateProduct(
     String barcode,
     String name,
@@ -235,7 +219,6 @@ class DBHelper {
     }
   }
 
-  // 3. ดึงรายการสินค้าทั้งหมด
   static Future<List<Map<String, dynamic>>> getAllProducts() async {
     final db = await database;
     return await db.rawQuery('''
@@ -246,7 +229,6 @@ class DBHelper {
     ''');
   }
 
-  // 4. แก้ไขชื่อและราคา (ถ้าราคาเปลี่ยน -> บันทึกประวัติ + ตั้งสถานะป้ายยังไม่อัปเดต)
   static Future<int> updateProduct(
     String barcode,
     String name,
@@ -285,7 +267,19 @@ class DBHelper {
     });
   }
 
-  // 5. ลบสินค้าออกจากฐานข้อมูล (ล็อต/ประวัติของสินค้านั้นถูกลบตาม)
+  static Future<int> updateProductImage(
+    String barcode,
+    String? imageFile,
+  ) async {
+    final db = await database;
+    return await db.update(
+      'products',
+      {'image_file': imageFile},
+      where: 'barcode = ?',
+      whereArgs: [barcode],
+    );
+  }
+
   static Future<int> deleteProduct(String barcode) async {
     final db = await database;
     return await db.delete(
@@ -295,11 +289,6 @@ class DBHelper {
     );
   }
 
-  // ===============================================================
-  // สต็อก
-  // ===============================================================
-
-  // ตั้งค่าจำนวนคงเหลือ / ขั้นต่ำ / หมวดหมู่
   static Future<int> updateStockSettings(
     String barcode, {
     required int stockQty,
@@ -320,7 +309,6 @@ class DBHelper {
     );
   }
 
-  // รับของเข้า (เพิ่มจำนวนคงเหลือ)
   static Future<void> addStock(String barcode, int qty) async {
     final db = await database;
     await db.rawUpdate(
@@ -329,7 +317,6 @@ class DBHelper {
     );
   }
 
-  // รายการที่ต้องซื้อ: เหลือ <= ขั้นต่ำ และไม่ใช่หมวดที่บริษัทเติมให้
   static Future<List<Map<String, dynamic>>> getShoppingList() async {
     final db = await database;
     return await db.rawQuery('''
@@ -350,11 +337,6 @@ class DBHelper {
     return await db.query('categories', orderBy: 'id ASC');
   }
 
-  // ===============================================================
-  // ป้ายราคา
-  // ===============================================================
-
-  // กดยืนยันว่าเปลี่ยนป้ายหน้าชั้นแล้ว
   static Future<void> markLabelUpdated(String barcode) async {
     final db = await database;
     await db.update(
@@ -377,17 +359,13 @@ class DBHelper {
     );
   }
 
-  // ===============================================================
-  // หมดอายุ / ของที่ทิ้ง / คำขอลูกค้า (ใช้ทำหน้าจอในระยะที่ 2)
-  // ===============================================================
-
   static Future<void> addBatch(
     String barcode,
     DateTime expiry,
     int qty,
   ) async {
     final db = await database;
-    final d = expiry.toIso8601String().substring(0, 10); // yyyy-MM-dd
+    final d = expiry.toIso8601String().substring(0, 10);
     await db.insert('batches', {
       'barcode': barcode,
       'expiry_date': d,
@@ -395,7 +373,6 @@ class DBHelper {
     });
   }
 
-  // ล็อตที่หมดอายุภายใน [days] วัน (รวมที่หมดแล้ว)
   static Future<List<Map<String, dynamic>>> getExpiringBatches(
     int days,
   ) async {
@@ -416,7 +393,6 @@ class DBHelper {
     );
   }
 
-  // บันทึกของที่ทิ้ง + ตัดสต็อก + คำนวณมูลค่าที่เสีย
   static Future<void> addWaste(String barcode, int qty, String reason) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -453,7 +429,6 @@ class DBHelper {
     });
   }
 
-  // สินค้าที่ลูกค้าถามหาบ่อย (เรียงตามจำนวนครั้ง)
   static Future<List<Map<String, dynamic>>> getTopCustomerRequests() async {
     final db = await database;
     return await db.rawQuery('''

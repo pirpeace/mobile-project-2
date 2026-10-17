@@ -24,7 +24,6 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
     });
   }
 
-  // จำนวนที่แนะนำให้ซื้อ: เติมให้ถึง 2 เท่าของขั้นต่ำ
   int _suggestedQty(Map<String, dynamic> item) {
     final int stock = item['stock_qty'] ?? 0;
     final int min = item['min_qty'] ?? 0;
@@ -32,12 +31,13 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
     return need < 1 ? 1 : need;
   }
 
-  // คัดลอกรายการเป็นข้อความ เพื่อวางใน LINE ให้คนอื่นซื้อแทนได้
   Future<void> _copyList(List<Map<String, dynamic>> items) async {
-    final d = DateTime.now();
-    final buffer = StringBuffer(
-      'รายการที่ต้องซื้อ ${d.day}/${d.month}/${d.year}\n',
-    );
+    final now = DateTime.now();
+    final dateStr = '${now.day.toString().padLeft(2, '0')}/'
+        '${now.month.toString().padLeft(2, '0')}/${now.year}';
+
+    final buffer = StringBuffer('รายการที่ต้องซื้อ $dateStr\n');
+
     for (final item in items) {
       final supplier = item['supplier_name'];
       buffer.writeln(
@@ -45,20 +45,23 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
         '${supplier != null ? ' ($supplier)' : ''}',
       );
     }
+
     await Clipboard.setData(ClipboardData(text: buffer.toString()));
     if (!mounted) return;
+
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('คัดลอกรายการแล้ว นำไปวางใน LINE ได้เลย')),
+      const SnackBar(
+        content: Text('คัดลอกรายการแล้ว นำไปวางใน LINE ได้เลย'),
+      ),
     );
   }
 
-  // กดว่าซื้อมาแล้ว -> ใส่จำนวนที่ได้รับ เพิ่มเข้าสต็อก
-  void _showReceiveDialog(Map<String, dynamic> item) {
+  Future<void> _showReceiveDialog(Map<String, dynamic> item) async {
     final qtyController = TextEditingController(
       text: _suggestedQty(item).toString(),
     );
 
-    showDialog(
+    await showDialog(
       context: context,
       builder: (context) => AlertDialog(
         title: Text("รับของเข้า: ${item['name']}"),
@@ -74,19 +77,28 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
           ),
           ElevatedButton(
             onPressed: () async {
-              final qty = int.tryParse(qtyController.text);
-              if (qty != null && qty > 0) {
-                await DBHelper.addStock(item['barcode'], qty);
-                if (!mounted) return;
-                Navigator.pop(context);
-                _reload();
+              final qty = int.tryParse(qtyController.text.trim());
+              if (qty == null || qty <= 0) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('กรุณากรอกจำนวนที่มากกว่า 0'),
+                  ),
+                );
+                return;
               }
+
+              await DBHelper.addStock(item['barcode'], qty);
+              if (!mounted) return;
+              Navigator.pop(context);
+              _reload();
             },
             child: const Text("บันทึก"),
           ),
         ],
       ),
     );
+
+    qtyController.dispose();
   }
 
   @override
@@ -94,7 +106,6 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('รายการที่ต้องซื้อ'),
-        backgroundColor: Colors.blueAccent,
         actions: [
           FutureBuilder<List<Map<String, dynamic>>>(
             future: _listFuture,
@@ -135,6 +146,7 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
             itemBuilder: (context, index) {
               final item = items[index];
               final supplier = item['supplier_name'];
+
               return ListTile(
                 title: Text(
                   item['name'] ?? '',
@@ -157,7 +169,10 @@ class _ShoppingListScreenState extends State<ShoppingListScreen> {
                       ),
                     ),
                     IconButton(
-                      icon: const Icon(Icons.check_circle, color: Colors.green),
+                      icon: const Icon(
+                        Icons.check_circle,
+                        color: Colors.green,
+                      ),
                       tooltip: 'ซื้อแล้ว',
                       onPressed: () => _showReceiveDialog(item),
                     ),
